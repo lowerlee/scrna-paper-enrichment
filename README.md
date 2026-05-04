@@ -24,12 +24,9 @@ The hard boundary is between *develops a method* and *applies a method*. The mod
 
 ## System Overview
 
-This is **not** a trained classifier. It is a deterministic pipeline whose final output is a binary RELEVANT / NOT_RELEVANT verdict for each candidate paper. The decision logic is:
+This is **not** a trained classifier. It is a deterministic pipeline whose final output is a binary RELEVANT / NOT_RELEVANT verdict for each candidate paper. The decision logic is a single **Haiku 4.5 API call** per paper, with a versioned prompt that encodes the include/exclude criteria above.
 
-1. A regex-based **keyword scorer** with a tunable threshold (cheap pre-filter).
-2. A **Claude API call** with a strict prompt that encodes the include/exclude criteria above (the actual decision).
-
-No model weights are fitted from data. Labeled examples are used only to (a) calibrate the keyword threshold, (b) regression-test the prompt, and (c) measure the pre-filter's recall.
+No model weights are fitted from data. Labeled examples are used only to regression-test the prompt and measure end-to-end precision and recall.
 
 ## Pipeline Stages
 
@@ -37,57 +34,26 @@ End-to-end flow for a single daily run:
 
 1. **Fetch.** Hit the bioRxiv API for papers posted since the last successful run, across configured categories (bioinformatics, genomics, systems biology, cell biology). Returns metadata only: title, abstract, authors, DOI, category, date.
 2. **Deduplicate.** For each paper, check DOI against `data/pipeline.db`. Drop papers already seen (handles bioRxiv revisions and reposts). Insert new papers with status `pending`.
-3. **Keyword score.** Run the regex scorer on `title + abstract` for each new paper. Papers below the threshold are written to SQLite as `NOT_RELEVANT` with reason `"keyword score X below threshold Y"` and skipped. Survivors continue.
-4. **Classify.** For each survivor, call the Claude API with a versioned prompt requesting structured JSON: `{verdict, confidence, reason}`. Parse, validate against schema, retry once on malformed JSON, then write the result to SQLite alongside the prompt version used.
-5. **Write digest.** Query SQLite for papers classified `RELEVANT` in this run. Split by confidence: HIGH/MEDIUM in the main section, LOW in the borderline section. Write `digests/YYYY-MM-DD.md` and `.csv`.
-6. **Log.** Counts at each stage (fetched, deduplicated, passed keyword filter, classified RELEVANT/NOT_RELEVANT), API errors, and JSON parse failures go to `logs/pipeline.log`.
+3. **Classify.** For each new paper, call Haiku 4.5 with a versioned prompt requesting structured JSON: `{verdict, confidence, reason}`. Parse, validate against schema, retry once on malformed JSON, then write the result to SQLite alongside the prompt version used.
+4. **Write digest.** Query SQLite for papers classified `RELEVANT` in this run. Split by confidence: HIGH/MEDIUM in the main section, LOW in the borderline section. Write `digests/YYYY-MM-DD.md` and `.csv`.
+5. **Log.** Counts at each stage (fetched, deduplicated, classified RELEVANT/NOT_RELEVANT), API errors, and JSON parse failures go to `logs/pipeline.log`.
 
-A typical run: 50 papers fetched → 12 already seen → 38 scored → 9 pass threshold → 9 Claude calls → 3 HIGH-confidence relevant, 1 LOW, 5 not relevant. The digest shows 4 papers; SQLite gains 38 rows.
+A typical run: 50 papers fetched → 12 already seen → 38 Haiku calls → 4 relevant (3 HIGH, 1 LOW), 34 not relevant. The digest shows 4 papers; SQLite gains 38 rows.
 
-## Keyword Scoring
+## Haiku Classification
 
-The scorer is a weighted regex matcher. Each term in the vocabulary has a weight and a category, and the paper score is the sum of `weight × match_count` across all terms appearing in the title + abstract.
-
-### Term categories
-
-- **Anchors** (low positive weight, ~0.5): domain terms like `single-cell`, `scRNA-?seq`, `spatial transcriptomics`, `ATAC-seq`. At least one anchor must match or the paper is off-topic. Anchors alone never carry a paper across the threshold — every scRNA-seq application paper contains them too.
-- **Method signals** (high positive weight, ~1.5–2.0): `we present`, `benchmark(s|ed|ing)?`, `outperform(s|ed)?`, `open-source`, `Python package`, `scalable`, `we develop`, `novel algorithm`. Disproportionately appear in methods papers.
-- **Application signals** (negative weight, ~−0.5 to −1.0): `we identif(y|ied)`, `patients?`, `tumor microenvironment`, `cell atlas of [tissue]` without methodology framing. Subtract from the score.
-
-A worked example:
-
-> "We present a scalable benchmark for scRNA-seq integration methods that outperforms existing approaches…"
-
-Scores 0.5 (single-cell) + 0.5 (scRNA-seq) + 2.0 (we present) + 2.0 (benchmark) + 1.5 (outperforms) = **6.5**, well above a threshold of 3.0.
-
-> "We performed scRNA-seq on tumor samples from 24 patients and identified a novel macrophage population…"
-
-Scores 0.5 (scRNA-seq) − 1.0 (we identified) − 0.5 (patients) = **−1.0**, correctly rejected.
-
-The actual weights are derived from labeled data once available — see *Validation* below — using a log-odds approach: `weight ∝ log(P(term | methods paper) / P(term | application paper))`. Hand-tuned weights are used until enough labels accumulate (Manning, Raghavan & Schütze, *Introduction to Information Retrieval*, 2008, ch. 13).
-
-### Threshold calibration
-
-The threshold trades precision for recall. The cost of one extra Claude call is trivial (~$0.001); the cost of dropping a real methods paper is silent failure — it never reaches the digest. The calibration rule is therefore: **set the threshold to catch ≥95% of labeled positives**, accepting whatever false-positive rate that implies. Claude does the precision work downstream.
-
-The threshold cannot be set without labeled data. Until the validation set exists, it stays conservative (low threshold, high recall, more API calls).
-
-### Limits of lexical scoring
-
-Keyword scoring sees only surface words. A methods paper using unusual phrasing ("Here we introduce…" instead of "We present…") may underscore. A clever application paper that borrows methodology vocabulary may overscore. These ambiguous cases are exactly what Claude is supposed to resolve, which is why the threshold is tuned for recall, not precision.
-
-## Claude Classification
-
-The classifier is a single API call per surviving paper. The prompt:
+The classifier is a single Haiku 4.5 call per deduplicated paper. The prompt:
 
 - States the include/exclude criteria from this README verbatim.
-- Includes 2–3 worked examples on each side, especially the hard application-paper case.
+- Includes four worked examples (easy positive, hard atlas positive, hard application negative, obvious off-topic negative) probing the actual decision boundary.
 - Encodes the decision rule: *would this paper be cited primarily for the tool/method, or primarily for the biological finding?* (cf. Luecken et al. 2022, *Nature Methods*, scIB benchmark; Saelens et al. 2019, *Nature Biotechnology*, on trajectory inference benchmarking).
-- Requests JSON output: `{"verdict": "RELEVANT"|"NOT_RELEVANT", "confidence": "HIGH"|"MEDIUM"|"LOW", "reason": "<one sentence>"}`.
+- Requests JSON output: `{"verdict": "RELEVANT"|"NOT_RELEVANT", "confidence": "HIGH"|"MEDIUM"|"LOW", "reason": "<one sentence, max 25 words>"}`.
 
-**Prompt versioning.** The prompt is stored as a string constant with a version number. Every classification result in SQLite records the prompt version used. When the prompt changes, the version increments — this lets us measure whether a prompt revision actually improved decisions without re-running everything.
+The system prompt is sent with `cache_control: ephemeral`, so only the first call in a 5-minute window pays full input rate; subsequent calls pay 10%. At ~50 papers/day the total cost is roughly $1–3/month.
 
-**Confidence calibration is not assumed.** LLM-reported HIGH/MEDIUM/LOW confidence is known to be poorly calibrated (Tian et al. 2023, "Just Ask for Calibration"). The borderline-section design is a hedge, not a trusted signal. Once the validation set exists, the empirical precision of each confidence bucket is checked; if LOW is not actually less precise than HIGH, the confidence field is replaced with a two-call agreement signal (run the classifier twice, treat disagreement as the uncertainty marker).
+**Prompt versioning.** The prompt lives in `prompts/classifier_v*.txt`. Every classification result in SQLite records the prompt version used. When the prompt changes, the version increments — this lets us measure whether a prompt revision actually improved decisions without re-running everything. Always re-run validation after editing the prompt; never edit the prompt and the test set in the same change.
+
+**Confidence calibration is not assumed.** LLM-reported HIGH/MEDIUM/LOW confidence is known to be poorly calibrated (Tian et al. 2023, "Just Ask for Calibration"). The borderline-section design is a hedge, not a trusted signal. Once the validation set exists, the empirical precision of each confidence bucket is checked; if LOW is not actually less precise than HIGH, the confidence field is replaced with a two-call agreement signal (run the classifier twice at `temperature=0.7`, treat disagreement as the uncertainty marker).
 
 ## Output
 
@@ -103,11 +69,10 @@ CSV mirrors the markdown for downstream tooling.
 
 ## Validation
 
-`validate.py` runs stages 3–5 of the pipeline (skipping fetch and dedup) against a labeled test set in `test-data/` and compares verdicts against `ground_truth.json`. Three quantities are measured:
+`validate.py` runs the classify stage against a labeled test set in `test-data/` and compares verdicts against `ground_truth.json`. Two quantities are measured:
 
-1. **End-to-end precision and recall** of the full pipeline.
-2. **Keyword filter recall** measured separately — of papers labeled RELEVANT, what fraction passed the threshold? This is the most likely silent failure mode, because a paper dropped by the keyword filter is indistinguishable in the final output from one Claude correctly rejected.
-3. **Per-confidence-bucket precision** for Claude's verdicts, to check whether the confidence field is actually informative.
+1. **End-to-end precision and recall** — verdicts vs. ground truth labels.
+2. **Per-confidence-bucket precision** — to check whether HIGH/MEDIUM/LOW is actually informative.
 
 ### Test set composition
 
@@ -177,7 +142,7 @@ Top-level `schema_version`, `created`, and `notes` track provenance. Bump `schem
 
 **Do not store extracted abstracts in ground truth.** Always extract from the PDF the same way the pipeline would. Storing pre-extracted text means changes to extraction code are no longer tested.
 
-The daily timer is not enabled until the test set is built and the pipeline reports ≥95% recall on labeled positives with the keyword filter measured independently.
+The daily timer is not enabled until the test set is built and the pipeline reports ≥95% recall on labeled positives.
 
 ## Project Structure
 
@@ -185,11 +150,10 @@ The daily timer is not enabled until the test set is built and the pipeline repo
 scrna-paper-enrichment/
 ├── shell.nix                 # Nix environment (python3, requests, anthropic)
 ├── run_pipeline.py           # Daily entry point
-├── validate.py               # Test set validation, including separate keyword-filter recall
+├── validate.py               # Test set validation
 ├── pipeline/
 │   ├── fetcher.py            # bioRxiv API client + pagination
-│   ├── keyword_filter.py     # Weighted regex scorer + vocabulary
-│   ├── classifier.py         # Claude API wrapper, JSON parser, prompt versioning
+│   ├── classifier.py         # Haiku 4.5 wrapper, JSON parser, prompt versioning
 │   └── output.py             # Markdown + CSV writer
 ├── prompts/
 │   └── classifier_v*.txt     # Versioned prompt files
@@ -201,7 +165,7 @@ scrna-paper-enrichment/
 
 ### SQLite schema (decisions, not just IDs)
 
-The `papers` table stores, per paper: DOI, title, abstract, fetch date, keyword score, keyword-filter verdict, Claude verdict, Claude confidence, Claude reason, prompt version, run ID. This makes it cheap to ask retrospective questions like "how many papers flipped between prompt v3 and v4?" and "what's the score distribution for papers Claude marked LOW confidence?" without re-running the pipeline.
+The `papers` table stores, per paper: DOI, title, abstract, fetch date, verdict, confidence, reason, prompt version, run ID. This makes it cheap to ask retrospective questions like "how many papers flipped between prompt v3 and v4?" and "what's the confidence distribution for NOT_RELEVANT papers?" without re-running the pipeline.
 
 ## Scheduling
 
@@ -211,7 +175,6 @@ Runs daily at 07:00 via a systemd user timer with `Persistent=true` so missed ru
 
 - **arXiv as a near-term source, not a future one.** A substantial fraction of computational scRNA-seq methodology — particularly ML-flavored work like foundation models for single-cell (scGPT, Geneformer, scFoundation) — appears first on arXiv under `cs.LG`, `q-bio.QM`, or `stat.ML`. bioRxiv-only coverage is systematically biased toward wet-lab and traditional bioinformatics methods over deep-learning ones. This is being promoted from "future" to a phase-two priority.
 - **Other sources.** Europe PMC, PubMed for peer-reviewed methods papers, eLife.
-- **Per-category thresholds.** Cell biology is high-noise (mostly applications); bioinformatics is high-signal. Category-specific thresholds may improve precision without sacrificing recall.
 - **Abstract vs. full text.** Benchmark whether abstract-only classification is meaningfully worse than fetching the full PDF. Methods papers usually announce the contribution explicitly in the abstract ("we present X"), so abstract-only is probably nearly as good and much cheaper — but worth confirming with data.
-- **Tiered LLM use.** Haiku for first-pass classification, Sonnet/Opus only for borderline cases. Cost is trivial at current volume but the architecture scales better.
+- **Escalation tier.** If Haiku's error rate on hard cases turns out to be unacceptable, add Sonnet as a fallback for LOW-confidence verdicts. At current volume this adds ~$0.01/day. Add it only after measuring Haiku's actual error rate, not preemptively.
 - **Embedding pre-filter.** After ~30 days of confirmed-relevant abstracts accumulate, layer in a SPECTER2-based pre-filter (Singh et al. 2023) that scores by cosine similarity to the centroid of confirmed positives. Captures semantic similarity rather than lexical overlap, so methods papers with unusual phrasing score correctly.
