@@ -22,12 +22,28 @@ These are small (~400 lines total). Read them completely — do not rely on summ
 You may only edit these sections:
 
 - **Execution Order** (stages 1–7) — function names, call order, logic flow, retry behavior
+- **Pipeline Flow Diagram** — a Mermaid `flowchart` block visualizing the stages and data flow (see spec below)
 - **Data shapes** — paper_dict, classifier_result, any new intermediate structures
 - **Data Store** — SQLite table columns, types, notes
 - **File I/O Summary** — table rows reflecting current reads/writes per stage
 - **Project Structure** — the directory tree, file descriptions
 
 You must not touch any other document. Do not edit `README.md`.
+
+## Pipeline Flow Diagram spec
+
+The diagram lives under a `## Pipeline Flow Diagram` heading in a fenced ` ```mermaid ` block using `flowchart TD`. If the section does not yet exist in `PIPELINE.md`, create it immediately after the **Execution Order** section.
+
+The diagram must include:
+
+- One node per execution stage (1–7), labeled with the stage name as it appears in **Execution Order**
+- External systems as distinct nodes: `bioRxiv API`, `Anthropic API` — render with a different shape than internal stages (e.g., `[[ ]]` subroutine or `(( ))`)
+- The SQLite store `data/pipeline.db` as a cylinder node: `[(data/pipeline.db)]`
+- Edges labeled with the data crossing them — `paper_dict[]`, `new_papers[]`, `classifier_result`, `run_id`, etc.
+- The classify-to-digest split: HIGH/MEDIUM verdicts route to the main `## Papers` digest section, LOW routes to `## Borderline`
+- Terminal output nodes: `digests/YYYY-MM-DD.md`, `digests/YYYY-MM-DD.csv`, `logs/pipeline.log`
+
+Keep node labels in sync with §Execution Order. If a stage, function, or data shape is renamed in the prose, rename it in the diagram in the same edit. Do not embed design rationale in the diagram — only show what the code does.
 
 ## Workflow
 

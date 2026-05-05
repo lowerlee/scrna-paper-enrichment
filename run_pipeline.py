@@ -86,7 +86,7 @@ def run():
             new_papers.append(p)
             con.execute(
                 "INSERT INTO papers (doi, title, abstract, authors, category, fetch_date, status) VALUES (?,?,?,?,?,?,?)",
-                (p["doi"], p["title"], p["abstract"], p["authors"], p["category"], p["fetch_date"], "pending"),
+                (p["doi"], p["title"], p["abstract"], p["authors"], p["category"], p["date"], "pending"),
             )
     con.commit()
     log.info("New (deduplicated): %d", len(new_papers))

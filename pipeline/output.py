@@ -13,7 +13,7 @@ def _rows_for_run(db_path: str, run_id: str) -> list[dict]:
                verdict, confidence, reason
         FROM papers
         WHERE run_id = ? AND verdict = 'RELEVANT'
-        ORDER BY confidence DESC, title ASC
+        ORDER BY CASE confidence WHEN 'HIGH' THEN 0 WHEN 'MEDIUM' THEN 1 WHEN 'LOW' THEN 2 ELSE 3 END, title ASC
         """,
         (run_id,),
     ).fetchall()

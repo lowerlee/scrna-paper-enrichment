@@ -1,5 +1,61 @@
 {
   "schema_version": 1,
-  "generated": null,
-  "issues": []
+  "generated": "2026-05-05T16:30:29Z",
+  "issues": [
+    {
+      "id": "TYPE-001",
+      "reader": "type_signature",
+      "file": "run_pipeline.py",
+      "line": 89,
+      "severity": "error",
+      "description": "Accessing p[\"fetch_date\"] on a paper dict, but pipeline/fetcher.py builds each paper dict with the key \"date\" (fetcher.py line 33), not \"fetch_date\". This will raise KeyError at runtime for every fetched paper.",
+      "proposed_fix": "Change p[\"fetch_date\"] to p[\"date\"] in the INSERT VALUES tuple on run_pipeline.py line 89, or rename the key in pipeline/fetcher.py line 33 from \"date\" to \"fetch_date\" to match the database column and downstream access.",
+      "status": "fixed",
+      "skip_reason": null
+    },
+    {
+      "id": "LOGIC-001",
+      "reader": "logic",
+      "file": "pipeline/output.py",
+      "line": 16,
+      "severity": "error",
+      "description": "ORDER BY confidence DESC sorts the TEXT column lexicographically, producing the order MEDIUM, LOW, HIGH instead of the intended HIGH, MEDIUM, LOW. As a result, the digest's main section lists MEDIUM-confidence papers before HIGH-confidence ones, and rows are not ranked by true confidence priority.",
+      "proposed_fix": "Replace the ORDER BY clause with an explicit ranking, e.g. `ORDER BY CASE confidence WHEN 'HIGH' THEN 0 WHEN 'MEDIUM' THEN 1 WHEN 'LOW' THEN 2 ELSE 3 END, title ASC`.",
+      "status": "fixed",
+      "skip_reason": null
+    },
+    {
+      "id": "DEAD-001",
+      "reader": "dead_code",
+      "file": "pipeline/fetcher.py",
+      "line": 2,
+      "severity": "warning",
+      "description": "`timedelta` is imported from datetime but never referenced anywhere in pipeline/fetcher.py; only `date` is used.",
+      "proposed_fix": "Change the import on line 2 from `from datetime import date, timedelta` to `from datetime import date`.",
+      "status": "fixed",
+      "skip_reason": null
+    },
+    {
+      "id": "DEAD-002",
+      "reader": "dead_code",
+      "file": "validate.py",
+      "line": 82,
+      "severity": "warning",
+      "description": "The `buckets[conf][\"tp\"]` counter is incremented on line 83 but never read afterwards; the precision computation on lines 90-97 recomputes tp_c and relevant_predicted from `results` directly, so the tp accumulation in `buckets` is write-only.",
+      "proposed_fix": "Remove the if/elif block on lines 82-85 (the tp counter is unused) and keep only the `total` increment on line 81; alternatively, refactor compute_metrics to read tp/total from `buckets` instead of recomputing from results.",
+      "status": "fixed",
+      "skip_reason": null
+    },
+    {
+      "id": "DEAD-003",
+      "reader": "dead_code",
+      "file": "validate.py",
+      "line": 84,
+      "severity": "warning",
+      "description": "The `elif r[\"predicted\"] == \"RELEVANT\":` branch on lines 84-85 contains only `pass` with a comment; it is reachable but performs no work and can be removed without changing behavior.",
+      "proposed_fix": "Remove lines 84-85 (the elif branch with the pass statement).",
+      "status": "fixed",
+      "skip_reason": null
+    }
+  ]
 }

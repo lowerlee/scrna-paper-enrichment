@@ -1,5 +1,5 @@
 import requests
-from datetime import date, timedelta
+from datetime import date
 
 BIORXIV_API = "https://api.biorxiv.org/details/biorxiv"
 CATEGORIES = ["bioinformatics", "genomics", "systems-biology", "cell-biology"]

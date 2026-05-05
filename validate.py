@@ -79,10 +79,6 @@ def compute_metrics(results: list[dict]) -> None:
             continue
         conf = r["predicted_confidence"]
         buckets[conf]["total"] += 1
-        if r["predicted"] == "RELEVANT" and r["label"] == "RELEVANT":
-            buckets[conf]["tp"] += 1
-        elif r["predicted"] == "RELEVANT":
-            pass  # FP counted in total but not tp
     for conf in ("HIGH", "MEDIUM", "LOW"):
         b = buckets.get(conf)
         if not b or b["total"] == 0:
