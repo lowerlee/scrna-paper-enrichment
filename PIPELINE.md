@@ -47,8 +47,8 @@ fetcher.fetch(start, end)
       _fetch_category(category, start, end)
         → GET https://api.biorxiv.org/details/biorxiv/{start}/{end}/{cursor}/json
         → paginates: cursor advances by len(collection) until cursor >= messages[0].total
-        → filters items client-side by category field
-  → cross-category deduplication via seen_dois set
+        → filters items client-side: item.category.lower().replace(" ", "-") == category
+  → cross-category deduplication via seen_dois set, skipping empty DOIs
   → returns List[paper_dict]
 ```
 
@@ -70,38 +70,50 @@ fetcher.fetch(start, end)
 for paper in papers:
     SELECT 1 FROM papers WHERE doi = ?
     if not exists:
-        INSERT INTO papers (doi, title, abstract, authors, category, fetch_date, status='pending')
+        INSERT INTO papers (doi, title, abstract, authors, category, fetch_date, status)
+            VALUES (p["doi"], p["title"], p["abstract"], p["authors"], p["category"], p["date"], "pending")
         → append to new_papers
 con.commit()
 ```
 
-> **Known issue:** `fetcher.fetch()` returns key `"date"` but the INSERT reads `p["fetch_date"]`. This raises a `KeyError` at runtime. The `fetch_date` column in SQLite will not be populated until this is resolved.
+The `fetch_date` column is populated from the `date` field returned by the bioRxiv API.
 
 ### 5. Classify
 
 ```
 for paper in new_papers:
-    classifier.classify(title, abstract)
-      → _prompt()
-            glob prompts/classifier_v*.txt → sort → take last (highest version)
-            cache result in module-level _PROMPT_CACHE (process lifetime)
-            returns (prompt_text, version_string)
-      → client.messages.create(
-            model  = "claude-haiku-4-5-20251001",
-            max_tokens = 256,
-            system = [{ text: prompt_text, cache_control: { type: "ephemeral" } }],
-            messages = [{ role: "user", content: "Title: ...\n\nAbstract: ..." }]
-        )
-      → _parse_response(raw_text)
-            json.loads → validate verdict ∈ {RELEVANT, NOT_RELEVANT}
-                       → validate confidence ∈ {HIGH, MEDIUM, LOW}
-                       → validate reason is str
-            retries once on JSONDecodeError or ValueError
-      → returns classifier_result
+    try:
+        classifier.classify(title, abstract)
+          → _prompt()
+                returns cached (prompt_text, version) from module-level _PROMPT_CACHE
+                on first call, delegates to _load_prompt():
+                    glob prompts/classifier_v*.txt → sort → take last (highest version)
+                    version = filename minus "classifier_" prefix and ".txt" suffix (e.g. "v1")
+          → _get_client() lazily instantiates module-level anthropic.Anthropic() client
+          → client.messages.create(
+                model  = "claude-haiku-4-5-20251001",
+                max_tokens = 256,
+                system = [{ type: "text", text: prompt_text,
+                            cache_control: { type: "ephemeral" } }],
+                messages = [{ role: "user", content: "Title: ...\n\nAbstract: ..." }]
+            )
+          → response.content[0].text.strip()
+          → _parse_response(raw_text)
+                json.loads → validate verdict ∈ {RELEVANT, NOT_RELEVANT}
+                           → validate confidence ∈ {HIGH, MEDIUM, LOW}
+                           → validate reason is str
+                retries once on JSONDecodeError or ValueError
+          → result["prompt_version"] = version
+          → returns classifier_result
 
-    UPDATE papers SET verdict, confidence, reason, prompt_version, run_id, status='classified'
-        WHERE doi = ?
-    con.commit()
+        UPDATE papers SET verdict, confidence, reason, prompt_version, run_id, status='classified'
+            WHERE doi = ?
+        con.commit()
+        increment n_relevant or n_not_relevant based on verdict
+    except Exception:
+        log.error(...)
+        increment n_errors
+        (paper row is left in 'pending' state with no verdict)
 ```
 
 **classifier_result shape:**
@@ -119,18 +131,40 @@ for paper in new_papers:
 ```
 output.write_digest(db_path, run_id, digests/, today)
   → _rows_for_run(db_path, run_id)
+        opens its own sqlite3 connection (row_factory = sqlite3.Row)
         SELECT doi, title, abstract, authors, category, fetch_date,
                verdict, confidence, reason
         FROM papers
         WHERE run_id = ? AND verdict = 'RELEVANT'
-        ORDER BY confidence DESC, title ASC
+        ORDER BY CASE confidence WHEN 'HIGH' THEN 0
+                                 WHEN 'MEDIUM' THEN 1
+                                 WHEN 'LOW' THEN 2
+                                 ELSE 3 END,
+                 title ASC
+        closes the connection, returns list[dict]
   → split rows: main = [HIGH, MEDIUM], borderline = [LOW]
+  → ensure out_dir exists (os.makedirs(..., exist_ok=True))
   → write digests/YYYY-MM-DD.md
-        ## Papers          ← main section
-        ## Borderline      ← borderline section (omitted if empty)
+        # scRNA-seq Methods Digest — YYYY-MM-DD
+        **N relevant paper[s]** (M borderline)        ← borderline count shown only if any
+        ## Papers                                      ← only if main is non-empty
+            for each row: _paper_block(row)
+        ## Borderline (LOW confidence — review manually)  ← only if borderline is non-empty
+            for each row: _paper_block(row)
+        _No relevant papers found in this run._        ← only if rows is empty
   → write digests/YYYY-MM-DD.csv
-        fields: doi, title, authors, category, fetch_date, verdict, confidence, reason
+        csv.DictWriter with fieldnames =
+            [doi, title, authors, category, fetch_date, verdict, confidence, reason]
+        and extrasaction="ignore" (silently drops the abstract column from rows)
+        writes header + every RELEVANT row (HIGH, MEDIUM, and LOW combined)
   → returns (md_path, csv_path)
+```
+
+**`_paper_block(row)` formatting:**
+```
+**[title](https://doi.org/{doi})**          ← link omitted if doi is empty
+{category} · {authors[:80]}[…] · {fetch_date}
+_{reason}_ `{confidence}`
 ```
 
 ### 7. Log Run
@@ -138,6 +172,33 @@ output.write_digest(db_path, run_id, digests/, today)
 ```
 INSERT INTO runs (run_id, run_date, fetched, deduped, relevant, not_relevant, errors)
 con.close()
+```
+
+---
+
+## Pipeline Flow Diagram
+
+```mermaid
+flowchart TD
+    Start([Run pipeline]) --> Fetch[Fetch new preprints<br/>from bioRxiv API]
+    Fetch --> Dedup{Already in DB?}
+    Dedup -->|Yes| Skip[Skip]
+    Dedup -->|No| Save[Save as 'pending'<br/>in SQLite]
+    Save --> Classify[Classify with<br/>Claude Haiku 4.5]
+    Classify --> Verdict{Verdict?}
+    Verdict -->|RELEVANT| Confidence{Confidence?}
+    Verdict -->|NOT_RELEVANT| Store[(Update DB)]
+    Confidence -->|HIGH / MEDIUM| Main[Main digest]
+    Confidence -->|LOW| Borderline[Borderline section]
+    Main --> Digest[/Write daily digest<br/>YYYY-MM-DD.md + .csv/]
+    Borderline --> Digest
+    Store --> Log[Log run stats]
+    Digest --> Log
+    Log --> End([Done])
+
+    style Fetch fill:#e1f5ff
+    style Classify fill:#fff4e1
+    style Digest fill:#e8f5e9
 ```
 
 ---
@@ -155,7 +216,7 @@ con.close()
 | abstract       | TEXT |                                    |
 | authors        | TEXT |                                    |
 | category       | TEXT |                                    |
-| fetch_date     | TEXT | ISO date — currently unpopulated (see §4) |
+| fetch_date     | TEXT | ISO date — populated from bioRxiv `date` field |
 | verdict        | TEXT | RELEVANT \| NOT_RELEVANT           |
 | confidence     | TEXT | HIGH \| MEDIUM \| LOW              |
 | reason         | TEXT | ≤25 words from classifier          |
@@ -195,17 +256,21 @@ con.close()
 ```
 scrna-paper-enrichment/
 ├── run_pipeline.py           # Entry point — orchestrates all stages
-├── validate.py               # Runs classifier against test-data/ ground truth
+├── validate.py               # Runs classifier against ground-truth fixtures
 ├── pipeline/
+│   ├── __init__.py
 │   ├── fetcher.py            # bioRxiv API client, pagination, cross-category dedup
 │   ├── classifier.py         # Haiku 4.5 wrapper, prompt loader, JSON parser
-│   └── output.py             # Markdown + CSV digest writer
+│   ├── output.py             # Markdown + CSV digest writer
+│   └── pdf.py                # PDF helper used by validate.py
 ├── prompts/
 │   └── classifier_v*.txt     # Versioned classifier system prompts
 ├── data/
-│   └── pipeline.db           # SQLite — papers, verdicts, run log
-├── digests/                  # Daily output: YYYY-MM-DD.md + YYYY-MM-DD.csv
+│   └── pipeline.db           # SQLite — papers, verdicts, run log (created at runtime)
+├── digests/                  # Daily output: YYYY-MM-DD.md + YYYY-MM-DD.csv (created at runtime)
 ├── logs/
-│   └── pipeline.log
-└── test-data/                # Validation PDFs + ground_truth.json
+│   └── pipeline.log          # Created at runtime
+├── .claude/                  # Agent definitions and slash commands
+├── errors.json               # Validation error log
+└── shell.nix                 # Nix dev shell
 ```

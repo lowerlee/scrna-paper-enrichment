@@ -4,7 +4,7 @@ You maintain `PIPELINE.md` — a technical execution trace of the scrna-paper-en
 
 ## What you do
 
-After a commit, you read the pipeline source files, compare them to the current `PIPELINE.md`, apply updates directly, and output a summary of every change made.
+You read the pipeline source files, compare them to the current `PIPELINE.md`, apply updates directly, and output a summary of every change made.
 
 ## Files you read
 
@@ -32,18 +32,57 @@ You must not touch any other document. Do not edit `README.md`.
 
 ## Pipeline Flow Diagram spec
 
-The diagram lives under a `## Pipeline Flow Diagram` heading in a fenced ` ```mermaid ` block using `flowchart TD`. If the section does not yet exist in `PIPELINE.md`, create it immediately after the **Execution Order** section.
+The diagram lives under a `## Pipeline Flow Diagram` heading in a fenced ` ```mermaid ` block using `flowchart TD` (top-down). If the section does not yet exist in `PIPELINE.md`, create it immediately after the **Execution Order** section.
 
-The diagram must include:
+The goal is a **simple, glanceable diagram** — a reader should grasp the pipeline in under 10 seconds. Detail belongs in **Execution Order** and **File I/O Summary**, not in the diagram. Prefer fewer, clearer nodes over completeness.
 
-- One node per execution stage (1–7), labeled with the stage name as it appears in **Execution Order**
-- External systems as distinct nodes: `bioRxiv API`, `Anthropic API` — render with a different shape than internal stages (e.g., `[[ ]]` subroutine or `(( ))`)
-- The SQLite store `data/pipeline.db` as a cylinder node: `[(data/pipeline.db)]`
-- Edges labeled with the data crossing them — `paper_dict[]`, `new_papers[]`, `classifier_result`, `run_id`, etc.
-- The classify-to-digest split: HIGH/MEDIUM verdicts route to the main `## Papers` digest section, LOW routes to `## Borderline`
-- Terminal output nodes: `digests/YYYY-MM-DD.md`, `digests/YYYY-MM-DD.csv`, `logs/pipeline.log`
+### Required content
 
-Keep node labels in sync with §Execution Order. If a stage, function, or data shape is renamed in the prose, rename it in the diagram in the same edit. Do not embed design rationale in the diagram — only show what the code does.
+- A `Start([Run pipeline])` terminal node and an `End([Done])` terminal node (stadium shape)
+- Action nodes for the major steps a reader cares about: fetching, deduplication, saving, classification, digest writing, and run logging. Stages 1 (Setup) and 2 (Determine Date Range) are plumbing — fold them into `Start`/`Fetch` rather than drawing them
+- Decision diamonds for branches that change the data's path:
+  - `Already in DB?` (Yes → Skip / No → Save as pending)
+  - `Verdict?` (RELEVANT → Confidence check / NOT_RELEVANT → just update DB)
+  - `Confidence?` (HIGH / MEDIUM → Main digest / LOW → Borderline section)
+- The output digest as a parallelogram node: `[/Write daily digest<br/>YYYY-MM-DD.md + .csv/]`
+- One DB cylinder `[(Update DB)]` for the NOT_RELEVANT branch — do not draw a separate cylinder for every read/write
+- A final `Log[Log run stats]` node converging both branches before `End`
+- Light styling on the three "headline" nodes (fetch, classify, digest) using `style` lines — these orient the reader
+
+### What to keep OUT
+
+- **No external API nodes** (`bioRxiv API`, `Anthropic API`). Mention them inline in the node label instead — e.g., `Fetch new preprints<br/>from bioRxiv API`, `Classify with<br/>Claude Haiku 4.5`.
+- **No edge labels carrying payload shapes** (`paper_dict[]`, `new_papers[]`, `run_id`, SQL fragments). Edges should be unlabeled except where they carry a yes/no or enum branch answer.
+- **No `subgraph` blocks.** The diagram is small enough to read without grouping.
+- **No logging edges.** Stage 1 setup and per-stage logging are not represented visually.
+
+### Rendering rules
+
+- **Always wrap node labels in double quotes when they contain spaces, punctuation, or HTML breaks.** E.g., `Save["Save as 'pending'<br/>in SQLite"]`. Unquoted labels with `'`, `(`, `)`, `/`, `?` break the parse.
+- **Quote edge labels containing special characters:** `-->|"HIGH / MEDIUM"|`, `-->|"NOT_RELEVANT"|`.
+- Use `<br/>` for line breaks inside node labels, not `\n`.
+
+### Reference shape
+
+The diagram should resemble this structure (node text may evolve as code changes, but the topology and simplicity should not):
+
+```
+Start → Fetch → Already in DB? ──Yes──→ Skip
+                       │
+                       No
+                       ↓
+                     Save → Classify → Verdict? ──NOT_RELEVANT──→ Update DB ──→ Log → End
+                                          │
+                                          RELEVANT
+                                          ↓
+                                      Confidence? ──HIGH/MEDIUM──→ Main digest ──┐
+                                          │                                       ├──→ Write digest → Log → End
+                                          LOW ─────────────────→ Borderline ─────┘
+```
+
+### Maintenance
+
+When code changes, update node text and branch labels to match — but resist adding nodes. If a new step appears in **Execution Order** that doesn't change *what a reader needs to understand the flow*, leave the diagram alone. Only add a node when the new step introduces a branch or a new external destination. Do not embed design rationale in the diagram — only show what the code does.
 
 ## Workflow
 

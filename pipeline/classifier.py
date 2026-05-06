@@ -37,6 +37,12 @@ def _prompt():
 
 VERDICT_VALUES = {"RELEVANT", "NOT_RELEVANT"}
 CONFIDENCE_VALUES = {"HIGH", "MEDIUM", "LOW"}
+SUPER_CATEGORY_VALUES = {"computational", "experimental", "resource"}
+SUB_CATEGORY_VALUES = {
+    "new_algorithm", "software_tool", "benchmark", "foundation_model",
+    "new_technology", "new_platform", "protocol_optimization",
+    "atlas", "dataset", "infrastructure",
+}
 
 
 def _parse_response(text: str) -> dict:
@@ -47,6 +53,12 @@ def _parse_response(text: str) -> dict:
         raise ValueError(f"Invalid confidence: {data.get('confidence')}")
     if not isinstance(data.get("reason"), str):
         raise ValueError("Missing reason string")
+    super_cat = data.get("super_category")
+    sub_cat = data.get("sub_category")
+    if super_cat is not None and super_cat not in SUPER_CATEGORY_VALUES:
+        raise ValueError(f"Invalid super_category: {super_cat}")
+    if sub_cat is not None and sub_cat not in SUB_CATEGORY_VALUES:
+        raise ValueError(f"Invalid sub_category: {sub_cat}")
     return data
 
 
@@ -71,14 +83,19 @@ def classify(title: str, abstract: str) -> dict:
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
-            messages=[{"role": "user", "content": user_content}],
+            messages=[
+                {"role": "user", "content": user_content},
+                {"role": "assistant", "content": "{"},
+            ],
         )
-        return response.content[0].text.strip()
+        return "{" + response.content[0].text
 
     raw = _call()
     try:
         result = _parse_response(raw)
     except (json.JSONDecodeError, ValueError):
+        import logging
+        logging.getLogger(__name__).warning("Parse failed, retrying. Raw response: %r", raw)
         raw = _call()
         result = _parse_response(raw)
 

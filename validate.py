@@ -73,7 +73,7 @@ def compute_metrics(results: list[dict]) -> None:
 
     # Per-confidence-bucket precision
     print("\n=== Precision by confidence ===")
-    buckets = defaultdict(lambda: {"tp": 0, "total": 0})
+    buckets = defaultdict(lambda: {"total": 0})
     for r in results:
         if r["predicted"] not in ("RELEVANT", "NOT_RELEVANT"):
             continue
@@ -136,7 +136,7 @@ def main():
     papers = load_ground_truth(args.ground_truth)
     print(f"Loaded {len(papers)} labeled papers from {args.ground_truth}")
 
-    results = run_validation(papers, os.path.dirname(os.path.abspath(__file__)))
+    results = run_validation(papers, base_dir)
     compute_metrics(results)
 
 
