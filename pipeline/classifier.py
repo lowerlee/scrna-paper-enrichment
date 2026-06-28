@@ -88,7 +88,8 @@ def classify(title: str, abstract: str) -> dict:
                 {"role": "assistant", "content": "{"},
             ],
         )
-        return "{" + response.content[0].text
+        block = response.content[0]
+        return "{" + (block.text if hasattr(block, 'text') else '')
 
     raw = _call()
     try:

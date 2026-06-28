@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated": "2026-05-06T00:00:00Z",
+  "generated": "2026-05-08T00:00:00Z",
   "issues": [
     {
       "id": "DEAD-001",
@@ -32,6 +32,39 @@
       "severity": "error",
       "description": "The `base_dir` computed on line 135 from the ground-truth file's directory is never used; `run_validation` is called with the script's own directory instead, so PDF paths are resolved relative to the wrong directory whenever the ground-truth file is not co-located with `validate.py`.",
       "proposed_fix": "Change `run_validation(papers, os.path.dirname(os.path.abspath(__file__)))` to `run_validation(papers, base_dir)`",
+      "status": "fixed",
+      "skip_reason": null
+    },
+    {
+      "id": "TYPE-001",
+      "reader": "type_signature",
+      "file": "pipeline/classifier.py",
+      "line": 91,
+      "severity": "error",
+      "description": "`response.content[0].text` accesses the `.text` attribute unconditionally on a value typed as `ContentBlock` (`TextBlock | ToolUseBlock`); `ToolUseBlock` has no `.text` attribute and would raise `AttributeError` at runtime if the model returns a non-text content block.",
+      "proposed_fix": "Guard the access with a type check: `block = response.content[0]; return \"{\" + (block.text if hasattr(block, 'text') else '')`",
+      "status": "fixed",
+      "skip_reason": null
+    },
+    {
+      "id": "LOGIC-003",
+      "reader": "logic",
+      "file": "pipeline/output.py",
+      "line": 57,
+      "severity": "warning",
+      "description": "When a paper has no real DOI the fetcher stores a synthetic `pmid:{pmid}` value (fetcher.py line 149); `doi_url` is then set to `https://doi.org/pmid:12345`, which is non-empty and truthy, so the paper title is hyperlinked to an invalid URL instead of rendered as plain text.",
+      "proposed_fix": "Change the condition to also exclude synthetic PMIDs: `doi_url = f\"https://doi.org/{p['doi']}\" if p[\"doi\"] and not p[\"doi\"].startswith(\"pmid:\") else \"\"`",
+      "status": "fixed",
+      "skip_reason": null
+    },
+    {
+      "id": "DEAD-002",
+      "reader": "dead_code",
+      "file": "run_pipeline.py",
+      "line": 145,
+      "severity": "warning",
+      "description": "`csv_path` is assigned from the `output.write_digest()` return value but is never read after assignment; only `md_path` is used in the subsequent log call.",
+      "proposed_fix": "Replace `md_path, csv_path = output.write_digest(...)` with `md_path, _ = output.write_digest(...)` to make the intentional discard explicit.",
       "status": "fixed",
       "skip_reason": null
     }

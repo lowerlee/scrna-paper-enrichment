@@ -54,7 +54,7 @@ def _rows_for_run(db_path: str, run_id: str) -> list[dict]:
 
 
 def _paper_block(p: dict) -> str:
-    doi_url = f"https://doi.org/{p['doi']}" if p["doi"] else ""
+    doi_url = f"https://doi.org/{p['doi']}" if p["doi"] and not p["doi"].startswith("pmid:") else ""
     title_line = f"**[{p['title']}]({doi_url})**" if doi_url else f"**{p['title']}**"
     meta = f"{p['category']} · {p['authors'][:80]}{'…' if len(p.get('authors','')) > 80 else ''} · {p['fetch_date']}"
     reason = p.get("reason", "")

@@ -142,7 +142,7 @@ def run(from_date: str | None = None, db_path: str | None = None, force: bool = 
     log.info("Classified: %d relevant, %d not relevant, %d errors",
              n_relevant, n_not_relevant, n_errors)
 
-    md_path, csv_path = output.write_digest(resolved_db, run_id, DIGESTS_DIR, today)
+    md_path, _ = output.write_digest(resolved_db, run_id, DIGESTS_DIR, today)
     log.info("Digest written: %s", md_path)
 
     con.execute(
